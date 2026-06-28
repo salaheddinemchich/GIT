@@ -1,5 +1,7 @@
 package com.example.orders;
 
+import com.example.common.PubSubConfig;
+import com.example.common.PubSubService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.GET;
@@ -11,15 +13,14 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
 /**
- * REST entry points to publish an order and check its status — lets the
- * messaging path (including the payments round-trip) be exercised end to
- * end. JAX-RS equivalent of kb-test's {@code OrderController}.
+ * REST entry points to publish an order and check its status — exercises the
+ * messaging path (including the payments round-trip) end to end.
  */
 @Path("/orders")
 public class OrderResource {
 
     @Inject
-    OrderPublisher publisher;
+    PubSubService pubsub;
     @Inject
     OrderStore orderStore;
 
@@ -28,7 +29,7 @@ public class OrderResource {
     @Produces(MediaType.TEXT_PLAIN)
     public Response create(Order order) {
         orderStore.markCreated(order.id());
-        publisher.publish(order);
+        pubsub.publish(PubSubConfig.topic(PubSubConfig.ORDERS_TOPIC), order.toMessage());
         return Response.ok("published " + order.id()).build();
     }
 

@@ -1,17 +1,15 @@
 # orders-jakarta-pubsub — Altrix migration validation fixture
 
-A **Jakarta EE 10 (JAX-RS + CDI) port of the sibling `kb-test` project**:
-same orders/payments/notifications domain, same choreography, same
-idiomatic Pub/Sub usage style — just on Jakarta EE instead of Spring Boot,
-using the modern `com.google.cloud:google-cloud-pubsub` client instead of
-Spring Cloud GCP's `PubSubTemplate`.
+A **minimal Jakarta EE 10 (JAX-RS + CDI + EJB) orders/payments/notifications
+fixture** using the **legacy Google Cloud Pub/Sub REST v1 client**
+(`com.google.api.services.pubsub`) — the same client style the sibling
+`test-altrix` fixture uses, deliberately **not** the gRPC-based
+`com.google.cloud:google-cloud-pubsub` client.
 
-Unlike `test-altrix` (a hand-rolled legacy REST v1 Pub/Sub *framework* — the
-hardest possible input) and `kb-test` (idiomatic, but Spring Boot), this is
-the **idiomatic Jakarta EE case**: direct, conventional Pub/Sub usage, no
-custom abstraction layer, ready to validate the Jakarta EE → Spring Kafka
-hybrid migration target end-to-end on a clean baseline before stress-testing
-it against `test-altrix`'s harder input.
+Pure HTTP/JSON Pub/Sub: publish/pull/ack via `pubsub.projects().topics()...`
+and `pubsub.projects().subscriptions()...`, with consumers driven by EJB
+`@Schedule` pollers (the REST v1 client has no async push API — you pull).
+Kept small on purpose so the migration has a small, clean surface to rewrite.
 
 ## Domains (one deployable, three bounded contexts)
 
@@ -19,50 +17,47 @@ it against `test-altrix`'s harder input.
 - **`com.example.payments`** — takes payment for every order, and handles refunds.
 - **`com.example.notifications`** — consumer-only "client": notifies on payment events, never publishes.
 
-Each domain owns its own message DTOs (`Order`, `OrderCreatedEvent`,
-`Payment`, `PaymentCompletedEvent`) even where they describe the same wire
-message — intentional duplication, matching how independently-deployed
-services would actually share a Pub/Sub contract. `com.example.app` hosts
-the JAX-RS bootstrap (`JaxRsApplication`, `/api/health`) and
-`AppStartupListener`, which starts/stops every subscriber on deploy/undeploy.
-`com.example.common.PubSubClients` is the shared publisher/subscriber
-builder (project id resolution + `PUBSUB_EMULATOR_HOST` wiring) — the rough
-equivalent of what `spring-cloud-gcp-starter-pubsub`'s auto-configuration
-gives kb-test for free.
+`com.example.common` holds the entire Pub/Sub seam: `PubSubConfig` (all topic
++ subscription names), `PubsubClientProducer` (CDI `@Produces` the REST v1
+`Pubsub` client, with `PUBSUB_EMULATOR_HOST` support + graceful degradation),
+and `PubSubService` (publish / consume / ack / topic+subscription
+provisioning). `com.example.app` hosts the JAX-RS bootstrap
+(`JaxRsApplication`, `/api/health`) and `TopicBootstrap` (creates all topics +
+subscriptions at startup, best-effort).
 
 ## Choreography
 
 ```
-POST /api/orders              OrderResource → OrderPublisher
+POST /api/orders              OrderResource → publish orders.created
                                    │
                                    ▼
                          topic: orders.created
                   ┌────────────────┴────────────────┐
                   ▼                                  ▼
    orders.created.processor              orders.created.payments
-   (OrderSubscriber, orders)              (PaymentRequestSubscriber, payments)
+   (OrderEventsPoller, orders)            (PaymentEventsPoller, payments)
                                                       │
                                                       ▼
                                        topic: payments.completed
                           ┌───────────────────────────┴───────────────────────────┐
                           ▼                                                       ▼
             payments.completed.orders                              payments.completed.notifications
-            (PaymentCompletedSubscriber, orders)                    (NotificationSubscriber, notifications)
+            (OrderEventsPoller, orders)                            (NotificationPoller, notifications)
             → marks the order PAID                                  → "send" a notification
 
-POST /api/payments/{orderId}/refund   PaymentResource → PaymentPublisher
+POST /api/payments/{orderId}/refund   PaymentResource → publish payments.refunded
                                           │
                                           ▼
                               topic: payments.refunded
                                           │
                                           ▼
                           payments.refunded.notifications
-                          (NotificationSubscriber, notifications)
+                          (NotificationPoller, notifications)
 ```
 
 3 topics, 5 subscriptions, 2 topics with fan-out to two independent consumer
-groups — same realistic topic→Kafka-topic / subscription→consumer-group
-mapping shape as `kb-test`.
+groups — a realistic topic→Kafka-topic / subscription→consumer-group mapping
+shape.
 
 ## REST endpoints
 - `GET /api/health` — liveness probe
@@ -74,11 +69,11 @@ mapping shape as `kb-test`.
 ## What a correct Spring-Kafka-hybrid migration looks like
 | Pub/Sub (this project) | Kafka (Spring Kafka hybrid target) |
 |---|---|
-| `com.google.cloud.pubsub.v1.Publisher` | `KafkaTemplate<String,String>` (via `SpringBeanBridge`) |
-| `publisher.publish(message).get()` | `kafkaTemplate.send(topic, payload)` |
-| `com.google.cloud.pubsub.v1.Subscriber` + `MessageReceiver` | `@KafkaListener(topics=..., groupId=...)` method |
-| `AppStartupListener` (manual subscriber lifecycle) | `SpringContextBootstrapper` (manual `ApplicationContext` lifecycle) |
-| `google-cloud-pubsub` Maven dependency | `spring-kafka` + `spring-context` |
+| `pubsub.projects().topics().publish(topic, req)` | `kafkaTemplate.send(topic, payload)` |
+| `pubsub.projects().subscriptions().pull(...)` + `@Schedule` poller | `@KafkaListener(topics=..., groupId=...)` method |
+| `pubsub.projects().subscriptions().acknowledge(...)` | (handled by the listener container's offset commit) |
+| `com.google.api.services.pubsub.Pubsub` (REST v1 client) | `KafkaTemplate` / `@KafkaListener` (via `SpringBeanBridge` / `CdiLookup`) |
+| `google-api-services-pubsub` Maven dependency | `spring-kafka` + `spring-context` |
 | one subscription per topic per consumer | one `groupId` per topic per consumer — same fan-out shape |
 
 ## Build
@@ -86,7 +81,7 @@ mapping shape as `kb-test`.
 `mvn` is not installed locally — build via the same Docker image the Altrix
 sandbox uses:
 ```bash
-docker run --rm -v "C:/Users/SALAH/Projects/test-altrix-jakarta-pubsub:/workspace" -v "C:/Users/SALAH/.m2:/root/.m2" -w /workspace maven:3.9-eclipse-temurin-21-alpine mvn -B clean package -DskipTests
+docker run --rm -e MAVEN_OPTS="-Xmx2g" -v "C:/Users/SALAH/Projects/test-altrix-jakarta-pubsub:/workspace" -v "C:/Users/SALAH/.m2:/root/.m2" -w /workspace maven:3.9-eclipse-temurin-21-alpine mvn -B clean package -DskipTests
 ```
 
 ## Run
@@ -96,10 +91,11 @@ java -jar target/orders-jakarta-pubsub-microbundle.jar --port 8081
 (Payara Micro's `--port` flag goes *after* the jar, space-separated — not
 `--server.port=`, which is Spring Boot's syntax.)
 
-To exercise real messaging, set `PUBSUB_EMULATOR_HOST` (and optionally
-`GCP_PROJECT_ID`) before starting, pointed at the `altrix-pubsub-emulator`
-container from `backend/docker-compose.yml`, and pre-create the 3 topics /
-5 subscriptions listed above via the emulator's REST API or `gcloud`.
+Set `PUBSUB_EMULATOR_HOST` (and optionally `GCP_PROJECT_ID`) before starting,
+pointed at the `altrix-pubsub-emulator` container from
+`backend/docker-compose.yml`. `TopicBootstrap` auto-creates all 3 topics + 5
+subscriptions at startup, so no manual provisioning is needed. See `E2E.ps1`
+for a full build + run + smoke-test script.
 
 ## Run through Altrix
 Upload this project, select **Jakarta EE + Spring Kafka hybrid** as the

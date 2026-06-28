@@ -13,13 +13,13 @@
 
     <name>orders-jakarta-pubsub</name>
     <description>
-        Jakarta EE 10 (JAX-RS + CDI) port of the sibling kb-test fixture:
-        same orders/payments/notifications domain and choreography, same
-        idiomatic Pub/Sub usage style, but on Jakarta EE instead of Spring
-        Boot, and using the modern com.google.cloud:google-cloud-pubsub
-        client instead of the legacy REST v1 client test-altrix uses.
-        Altrix migration-source fixture — intended target: Jakarta EE +
-        Apache Kafka (Spring Kafka hybrid).
+        Jakarta EE 10 (JAX-RS + CDI) orders/payments/notifications fixture
+        using the legacy Google Cloud Pub/Sub REST v1 client
+        (com.google.api.services.pubsub) — the same client style the sibling
+        test-altrix fixture uses, deliberately NOT the gRPC-based
+        com.google.cloud:google-cloud-pubsub client. Altrix migration-source
+        fixture — intended target: Jakarta EE + Apache Kafka (Spring Kafka
+        hybrid).
     </description>
 
     <properties>
@@ -28,24 +28,14 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <jakartaee.version>10.0.0</jakartaee.version>
-        <google.cloud.pubsub.bom.version>26.43.0</google.cloud.pubsub.bom.version>
+        <google.pubsub.version>v1-rev20210208-1.31.0</google.pubsub.version>
+        <google.api.client.version>1.32.1</google.api.client.version>
+        <google.http.client.version>1.39.2</google.http.client.version>
         <slf4j.version>2.0.9</slf4j.version>
     </properties>
 
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>com.google.cloud</groupId>
-                <artifactId>libraries-bom</artifactId>
-                <version>${google.cloud.pubsub.bom.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
-
     <dependencies>
-        <!-- Jakarta EE 10 API: JAX-RS, CDI, JSON-B -->
+        <!-- Jakarta EE 10 API: JAX-RS, CDI, EJB (@Schedule timers) -->
         <dependency>
             <groupId>jakarta.platform</groupId>
             <artifactId>jakarta.jakartaee-api</artifactId>
@@ -53,12 +43,33 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- Modern, idiomatic GCP Pub/Sub client (gRPC-based) — the
-             integration this project migrates AWAY from. Version managed
-             by the libraries-bom import above. -->
+        <!-- Google Cloud Pub/Sub — legacy REST v1 client
+             (com.google.api.services.pubsub). Pure HTTP/JSON, NO gRPC. The
+             integration this project migrates AWAY from. -->
         <dependency>
-            <groupId>com.google.cloud</groupId>
-            <artifactId>google-cloud-pubsub</artifactId>
+            <groupId>com.google.apis</groupId>
+            <artifactId>google-api-services-pubsub</artifactId>
+            <version>${google.pubsub.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.api-client</groupId>
+            <artifactId>google-api-client</artifactId>
+            <version>${google.api.client.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.auth</groupId>
+            <artifactId>google-auth-library-oauth2-http</artifactId>
+            <version>1.23.0</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.http-client</groupId>
+            <artifactId>google-http-client</artifactId>
+            <version>${google.http.client.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.http-client</groupId>
+            <artifactId>google-http-client-jackson2</artifactId>
+            <version>${google.http.client.version}</version>
         </dependency>
 
         <!-- SLF4J — slf4j-simple prints to stderr at runtime; without a
